@@ -1,40 +1,98 @@
-import os
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
+from bs4 import BeautifulSoup
+import re
 import time
 
-# --- DUMMY SERVER FOR RENDER PORT BINDING ---
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Meme scraper is live!")
+# -------------------------------------------------------------
+# CONFIGURATION
+# -------------------------------------------------------------
+NTFY_TOPIC = "meme-coin-scraper"
 
-def run_health_check_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    server.serve_forever()
+# Accounts to monitor (Added niche crypto accounts)
+TARGET_ACCOUNTS = [
+    "pumpdotfun", 
+    "dexscreener", 
+    "solana",
+    "raydiumprotocol",
+    "cookerbiot",
+    "solanakings"
+]
 
-# Start port listener in a background thread
-threading.Thread(target=run_health_check_server, daemon=True).start()
+# Specific tokens/keywords to watch for
+WATCH_KEYWORDS = ["$XST", "XST", "TRUMP", "GEM", "100X", "CA:"]
 
-# --- SCRAPER LOGIC ---
-NTFY_URL = "https://ntfy.sh/luca_meme_alerts"  # Update this if your ntfy topic name is different
+# Free open-source Twitter mirror instances
+NITTER_SERVERS = [
+    "https://nitter.poast.org",
+    "https://nitter.privacydev.net",
+    "https://nitter.lucabased.xyz"
+]
 
-def send_notification(message):
+seen_tweets = set()
+
+def send_ntfy_alert(account, text, ca_list, tickers):
+    url = f"https://ntfy.sh/{NTFY_TOPIC}"
+    
+    body = f"@{account} posted:\n\n\"{text}\"\n"
+    if ca_list:
+        body += f"\n🚨 CA: {ca_list[0]}"
+    
+    headers = {
+        "Title": f"Meme Alert: {', '.join(tickers) if tickers else 'New Post'}",
+        "Priority": "high",
+        "Tags": "rocket,moneybag"
+    }
+    
     try:
-        requests.post(NTFY_URL, data=message.encode('utf-8'))
+        requests.post(url, data=body.encode('utf-8'), headers=headers)
+        print(f"[+] ALERT SENT TO PHONE: @{account}")
     except Exception as e:
-        print(f"Failed to send alert: {e}")
+        print(f"[-] Failed to send ntfy alert: {e}")
 
-print("Scraper starting up...")
-send_notification("Render deployment successful! Scraper is now online 24/7.")
+def check_accounts():
+    ca_pattern = r'[1-9A-HJ-NP-Za-km-z]{32,44}|0x[a-fA-F0-9]{40}'
+    
+    for account in TARGET_ACCOUNTS:
+        scraped = False
+        for instance in NITTER_SERVERS:
+            if scraped:
+                break
+            url = f"{instance}/{account}"
+            try:
+                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+                response = requests.get(url, headers=headers, timeout=10)
+                
+                if response.status_code == 200:
+                    soup = BeautifulSoup(response.text, "html.parser")
+                    tweets = soup.find_all("div", class_="tweet-content")
+                    
+                    for tweet in tweets:
+                        tweet_text = tweet.get_text().strip()
+                        tweet_id = f"{account}_{hash(tweet_text)}"
+                        
+                        if tweet_id not in seen_tweets:
+                            seen_tweets.add(tweet_id)
+                            found_cas = re.findall(ca_pattern, tweet_text)
+                            found_tickers = re.findall(r'\$[A-Za-z]+', tweet_text)
+                            
+                            # Check for keywords or CAs/tickers
+                            has_keyword = any(kw.lower() in tweet_text.lower() for kw in WATCH_KEYWORDS)
+                            
+                            if found_cas or found_tickers or has_keyword:
+                                send_ntfy_alert(account, tweet_text, found_cas, found_tickers)
+                    scraped = True
+            except Exception:
+                continue
 
-while True:
-    try:
-        print("Scanning for meme coins...")
-        time.sleep(60) 
-    except Exception as e:
-        print(f"Error during scan loop: {e}")
-        time.sleep(60)
+if __name__ == "__main__":
+    print("🚀 Free Meme Coin Tracker Started! Listening for tweets & $XST...")
+    while True:
+        try:
+            check_accounts()
+            time.sleep(30)
+        except KeyboardInterrupt:
+            print("\nTracker stopped.")
+            break
+        except Exception as e:
+            print(f"Error: {e}")
+            time.sleep(10)
