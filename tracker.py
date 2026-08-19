@@ -1,60 +1,91 @@
 import os
+import sys
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
-import re
 import time
+from bs4 import BeautifulSoup
+
+# Force instant log printing in Render console
+sys.stdout.reconfigure(line_buffering=True)
 
 # ==========================================
-# 1. RENDER PORT BINDING (GET + HEAD HANDLER)
+# 1. RENDER PORT BINDING (HEALTH CHECK)
 # ==========================================
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Scraper is online 24/7!")
+        self.wfile.write(b"Scraper active 24/7")
 
     def do_HEAD(self):
         self.send_response(200)
         self.end_headers()
 
     def log_message(self, format, *args):
-        return  # Silence server logs to keep Render console clean
+        return  # Keep Render console logs clean
 
 def run_health_check_server():
     port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
+# Run the health check web server in a background thread
 threading.Thread(target=run_health_check_server, daemon=True).start()
 
 # ==========================================
-# 2. NTFY ALERT & SCRAPER LOGIC
+# 2. NTFY CONFIGURATION & ALERT FUNCTION
 # ==========================================
 NTFY_URL = "https://ntfy.sh/luca_meme_alerts"
 
-def send_notification(message):
+def send_alert(message):
     try:
         res = requests.post(NTFY_URL, data=message.encode('utf-8'), timeout=10)
-        print(f"Alert status {res.status_code}: {message}")
+        print(f"--- NTFY ALERT SENT ({res.status_code}): {message} ---")
     except Exception as e:
-        print(f"Failed to send notification: {e}")
+        print(f"--- NTFY ERROR: {e} ---")
 
-# Delay slightly so network binding completes before sending first alert
-time.sleep(3)
-send_notification("Tracker online and monitoring 24/7 on Render!")
+# Send startup notification when container boots
+time.sleep(2)
+send_alert("🚀 Tracker online! Monitoring $XST and target feeds 24/7 on Render.")
+
+# ==========================================
+# 3. SCRAPER & KEYWORD MONITORING LOOP
+# ==========================================
+# Set your target URLs and keywords
+TARGET_KEYWORDS = ["$XST", "XST", "pump", "launch"]
+TARGET_URLS = [
+    # Add your target endpoint or feed URLs here
+    # "https://example.com/feed",
+]
+
+seen_posts = set()
 
 while True:
-    try:
-        print("Scanning target feeds...")
-        
-        # --- PASTE YOUR ACTUAL SCRAPING LOGIC BELOW ---
-        # Example:
-        # res = requests.get("https://api.example.com/feed")
-        # if "$XST" in res.text:
-        #     send_notification("ALERT: $XST detected!")
+    print("--- Scanning target feeds for $XST ---")
+    
+    for url in TARGET_URLS:
+        try:
+            headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'}
+            response = requests.get(url, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                page_text = soup.get_text()
+                
+                for keyword in TARGET_KEYWORDS:
+                    if keyword.lower() in page_text.lower():
+                        alert_msg = f"🔥 MATCH FOUND! Keyword '{keyword}' detected on {url}"
+                        
+                        # Prevent duplicate spamming for the same match
+                        if alert_msg not in seen_posts:
+                            send_alert(alert_msg)
+                            seen_posts.add(alert_msg)
+            else:
+                print(f"Failed to fetch {url}: Status {response.status_code}")
 
-        time.sleep(60)
-    except Exception as e:
-        print(f"Error during scan loop: {e}")
-        time.sleep(60)
+        except Exception as err:
+            print(f"Error scraping {url}: {err}")
+    
+    # Wait 60 seconds between scan cycles
+    time.sleep(60)
